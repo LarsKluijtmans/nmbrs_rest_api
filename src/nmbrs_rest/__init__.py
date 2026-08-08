@@ -18,16 +18,17 @@ except PackageNotFoundError:  # pragma: no cover - running from a source tree
     __version__ = "0.0.0"
 
 from nmbrs_rest.auth import AuthorizationRequest, OAuth
+from nmbrs_rest.client import ALL_READ_SCOPES, DEFAULT_SCOPES, Nmbrs
 from nmbrs_rest.errors import (
     APIError,
     AuthenticationError,
     DataAccessError,
-    EmployeeResolutionError,
     IdentityServerError,
     InsufficientScopeError,
     InvalidGrantError,
     NmbrsConfigError,
     NmbrsError,
+    NotAuthenticatedError,
     NotFoundError,
     PermissionError,
     QuotaExceededError,
@@ -39,6 +40,7 @@ from nmbrs_rest.errors import (
     ValidationError,
 )
 from nmbrs_rest.pagination import Page, unwrap_one
+from nmbrs_rest.resources import Company, Debtor, Employee
 from nmbrs_rest.tokens import (
     CallbackTokenStore,
     FileTokenStore,
@@ -50,20 +52,26 @@ from nmbrs_rest.tokens import (
 from nmbrs_rest.transport import Transport
 
 __all__ = [
+    "ALL_READ_SCOPES",
+    "DEFAULT_SCOPES",
     "APIError",
     "AuthenticationError",
     "AuthorizationRequest",
     "CallbackTokenStore",
+    "Company",
     "DataAccessError",
-    "EmployeeResolutionError",
+    "Debtor",
+    "Employee",
     "FileTokenStore",
     "IdentityServerError",
     "InsufficientScopeError",
     "InvalidGrantError",
     "KeyringTokenStore",
     "MemoryTokenStore",
+    "Nmbrs",
     "NmbrsConfigError",
     "NmbrsError",
+    "NotAuthenticatedError",
     "NotFoundError",
     "OAuth",
     "Page",

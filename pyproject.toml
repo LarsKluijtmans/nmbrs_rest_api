@@ -94,10 +94,13 @@ src = ["src", "tests"]
 # Ruff formats Python inside markdown fences. The docs use column-aligned trailing
 # comments deliberately, so keep prose out of scope.
 #
-# _scopes.py is generated; excluding it stops ruff and the generator disagreeing,
-# which would make `generate_scopes.py --check` fail in CI forever. mypy still
-# type-checks it.
-extend-exclude = ["*.md", "src/nmbrs_rest/_scopes.py"]
+# The generated files are excluded so ruff and the generators cannot disagree,
+# which would make `--check` fail in CI forever. mypy still type-checks both.
+extend-exclude = [
+    "*.md",
+    "src/nmbrs_rest/_scopes.py",
+    "src/nmbrs_rest/resources/_generated.py",
+]
 
 [tool.ruff.lint]
 select = [

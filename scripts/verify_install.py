@@ -149,6 +149,42 @@ def _scopes() -> str:
     return f"{len(REQUIRED_SCOPES)} operations, {len(KNOWN_SCOPES)} scopes"
 
 
+@check("generated read methods are present on the resource classes")
+def _read_surface() -> str:
+    from nmbrs_rest import Company, Debtor, Employee
+
+    counts = {}
+    for cls, expected in ((Employee, 34), (Company, 19), (Debtor, 7)):
+        found = sum(
+            1
+            for name in dir(cls)
+            if not name.startswith("_") and callable(getattr(cls, name, None))
+        )
+        if found < expected:
+            raise AssertionError(f"{cls.__name__} exposes {found} reads, expected >= {expected}")
+        counts[cls.__name__] = found
+    return ", ".join(f"{k} {v}" for k, v in counts.items())
+
+
+@check("the Nmbrs facade refuses to read before authenticating")
+def _facade() -> str:
+    from nmbrs_rest import Nmbrs
+    from nmbrs_rest.errors import NotAuthenticatedError
+
+    api = Nmbrs("client-id", "client-secret", "subscription-key-value")
+    url = api.login("https://app.example/callback")
+    if not url.startswith("https://identityservice.nmbrs.com/connect/authorize?"):
+        raise AssertionError(f"login() built an unexpected URL: {url}")
+    if "offline_access" not in url:
+        raise AssertionError("default scopes omit offline_access, so no refresh token")
+
+    try:
+        api.companies()
+    except NotAuthenticatedError:
+        return "login() builds a consent URL; reads raise until authenticated"
+    raise AssertionError("reading without a token should have raised NotAuthenticatedError")
+
+
 # --------------------------------------------------------------------------- #
 # Behaviour: does the thing actually work?
 # --------------------------------------------------------------------------- #
