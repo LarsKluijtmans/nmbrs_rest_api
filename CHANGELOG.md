@@ -11,6 +11,10 @@ human-written record. Update it before tagging.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.0.1] - 2026-08-08
+
 ### Added
 
 - **`Nmbrs` facade.** `Nmbrs(client_id, client_secret, subscription_key)` owns the whole
@@ -83,4 +87,5 @@ human-written record. Update it before tagging.
   (`countries`, `user_info`, `subscription`, `document`, `salary_table`,
   `end_contract_reasons`) are not implemented.
 
-[Unreleased]: https://github.com/LarsKluijtmans/nmbrs_rest_api/commits/main
+[Unreleased]: https://github.com/LarsKluijtmans/nmbrs_rest_api/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/LarsKluijtmans/nmbrs_rest_api/releases/tag/v0.0.1
