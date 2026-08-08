@@ -11,7 +11,24 @@ human-written record. Update it before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- **`example/`** — a runnable project: `main.py` (browser consent, saves the refresh
+  token), `resume.py` (headless from the saved token, what a cron job looks like),
+  `explore.py` (filters, caching, errors worth catching, raw access), plus a
+  `callback.py` that catches the OAuth redirect so the code never has to be copied out
+  of the address bar. Ships in the sdist alongside `docs/`.
+- `Company.raw`, `Debtor.raw` and `Employee.raw` return the API row an object was built
+  from, for fields the SDK does not surface.
+
 ### Changed
+
+- README rewritten and expanded: authentication (first run, resume, web apps), the read
+  API with worked examples, error handling, scopes, and a pointer to `example/`. Adds a
+  call to action for reporting bugs, with a note that exception text is safe to paste
+  because tokens are redacted before the message is built.
+- `Company.employee()` now attaches the operation to its `ResourceNotFoundError`, so the
+  message names the endpoint instead of reading `[404] request:`.
 
 - **Releases are one button.** `Actions → Release → Run workflow`, type the version,
   approve. The workflow validates, builds, publishes to TestPyPI, installs from there

@@ -1,0 +1,6 @@
+# The SDK itself. Pin it in a real project; left open here so the example always
+# runs against the latest release.
+nmbrs-rest-api
+
+# Only used by this example, to read .env. The SDK does not depend on it.
+python-dotenv>=1.0

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
-from nmbrs_rest.errors import ResourceNotFoundError
+from nmbrs_rest.errors import Operation, ResourceNotFoundError
 from nmbrs_rest.pagination import Page
 from nmbrs_rest.resources._generated import CompanyReads
 from nmbrs_rest.resources.base import Resource, normalise
@@ -117,6 +117,11 @@ class Company(Resource, CompanyReads):
             detail=(
                 f"employee {employee_id!r} is not in company {self._id!r}. "
                 "Employee ids are only meaningful inside their owning company"
+            ),
+            operation=Operation(
+                method="GET",
+                template=EMPLOYEES,
+                path=EMPLOYEES.format(companyId=self._id),
             ),
         )
 

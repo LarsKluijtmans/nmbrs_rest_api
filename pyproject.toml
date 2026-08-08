@@ -83,7 +83,18 @@ local_scheme = "no-local-version"
 packages = ["src/nmbrs_rest"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+# docs/ and example/ ship too: the README points at them, and an sdist that
+# cannot answer its own README is not much use offline.
+include = [
+    "src",
+    "tests",
+    "docs",
+    "example",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 # ---------------------------------------------------------------------------
 # Tooling
@@ -91,7 +102,9 @@ include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.to
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["src", "tests"]
+# `example` is listed so ruff treats global_variables/callback as first-party and
+# does not sort them above the nmbrs_rest imports.
+src = ["src", "tests", "example"]
 # Ruff formats Python inside markdown fences. The docs use column-aligned trailing
 # comments deliberately, so keep prose out of scope.
 #
