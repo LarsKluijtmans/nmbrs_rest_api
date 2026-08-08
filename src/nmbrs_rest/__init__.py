@@ -38,7 +38,7 @@ from nmbrs_rest.errors import (
     TransportError,
     ValidationError,
 )
-from nmbrs_rest.pagination import Page
+from nmbrs_rest.pagination import Page, unwrap_one
 from nmbrs_rest.tokens import (
     CallbackTokenStore,
     FileTokenStore,
@@ -79,4 +79,5 @@ __all__ = [
     "TransportError",
     "ValidationError",
     "__version__",
+    "unwrap_one",
 ]

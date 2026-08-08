@@ -31,6 +31,19 @@ human-written record. Update it before tagging.
 - `scripts/try_testpypi.py` installs the staged package from TestPyPI into a throwaway
   virtualenv and runs `scripts/verify_install.py` against it, so a staging release is
   verified as an installed artifact rather than as a working directory.
+- `scripts/login.py` runs the authorization code flow end to end: opens the browser,
+  catches the redirect on localhost, exchanges the code, and writes the tokens where a
+  `FileTokenStore` can find them. With `--subscription-key` it then makes a real
+  `GET /api/companies` call to confirm the credentials work.
+- `unwrap_one` is exported from the package root alongside `Page`. Both are needed for
+  ordinary reads, so exporting only one of them was an oversight.
+
+### Changed
+
+- README now separates the target API from what is actually implemented. The previous
+  status note said installing the package "gets you a version number and nothing else",
+  which stopped being true once the runtime landed, and the example used the unbuilt
+  `Nmbrs` facade with nothing marking it as aspirational.
 
 ### Notes
 

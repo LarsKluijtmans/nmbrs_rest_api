@@ -8,10 +8,12 @@ debtor, company and employee objects.
 [![License](https://img.shields.io/pypi/l/nmbrs-rest-api.svg)](https://github.com/LarsKluijtmans/nmbrs_rest_api/blob/main/LICENSE)
 [![CI](https://github.com/LarsKluijtmans/nmbrs_rest_api/actions/workflows/ci.yml/badge.svg)](https://github.com/LarsKluijtmans/nmbrs_rest_api/actions/workflows/ci.yml)
 
-> **Status: design stage.** The architecture, authentication contract and error model are
-> written up and reviewed, but the client is not implemented yet. Installing the package
-> today gets you a version number and nothing else. The code below is the intended API,
-> not a description of shipped behaviour. Watch the repo for the first usable release.
+> **Status: partially implemented.** Authentication, errors, transport and pagination are
+> built, tested and usable today — see [What works today](#what-works-today). The
+> `Nmbrs` facade and the lazy debtor/company/employee objects are **not** implemented
+> yet, so the snippet under [The idea](#the-idea) does not run: `from nmbrs_rest import
+> Nmbrs` raises `ImportError`. It is the design target, kept here because it is what the
+> library is being built towards.
 
 ## Install
 
@@ -32,6 +34,7 @@ This SDK hides that. You ask for an employee and read attributes; it works out w
 requests to make, when, and caches them.
 
 ```python
+# TARGET API - not implemented yet. See "What works today" below for what runs now.
 from nmbrs_rest import Nmbrs
 
 api = Nmbrs(
@@ -62,6 +65,69 @@ for employee in company.employees():      # auto-paginating
     print(employee.personal_info.first_name)
 
 employee = company.employee("ecbf546b-...")
+```
+
+## What works today
+
+Everything below the resource layer. You authenticate, make requests, get paginated
+results back and get precise errors — you just do it against paths rather than against
+`Employee` objects.
+
+**1. Get a token.** Nmbrs only supports the OAuth authorization code flow, so a human
+has to approve once in a browser. This does that and writes the result to a file:
+
+```bash
+python scripts/login.py --client-id ... --client-secret ... --subscription-key ...
+```
+
+It opens your browser, catches the redirect on `localhost:8080`, exchanges the code,
+saves the tokens, and — if you pass `--subscription-key` — makes a real
+`GET /api/companies` call to prove the whole chain works. The redirect URI must be
+registered on your client in the Nmbrs portal first.
+
+**2. Use it.** The token store handles refresh and rotation for you:
+
+```python
+from nmbrs_rest import FileTokenStore, OAuth, Page, Transport, unwrap_one
+
+oauth = OAuth(client_id="...", client_secret="...")
+api = Transport(
+    subscription_key="...",
+    oauth=oauth,
+    token_store=FileTokenStore(".nmbrs-tokens.json"),
+)
+
+# Single read. Nmbrs wraps every response in {"data": [...]}, even for one record,
+# so unwrap_one pulls the single item out and raises if there isn't exactly one.
+payload = api.get_json("/api/companies/{companyId}", path="/api/companies/ad3562fc-...")
+company = unwrap_one(payload, template="/api/companies/{companyId}")
+
+# Auto-paginating read; nothing is fetched until you iterate.
+for employee in Page(
+    api,
+    "/api/companies/{companyId}/employees",
+    path="/api/companies/ad3562fc-.../employees",
+    factory=lambda row: row,
+):
+    print(employee["employeeId"])
+```
+
+Access tokens are refreshed before they expire and again if the server rejects one, the
+request is replayed, and the rotated refresh token is persisted before use. Rate limits
+and transient 5xx are retried with jittered backoff.
+
+**3. When something is forbidden, it tells you why.** The OpenAPI spec declares the
+scopes each of the 123 operations needs, so a 403 names the one you are missing rather
+than saying "forbidden":
+
+```
+InsufficientScopeError: [403/40303] GET /api/companies/ad3562fc/employees/salaries: no detail provided
+
+  This operation accepts any of:  employee.employment, employee.employment.read
+  Your token was granted:         company.info.read, employee.info.read
+
+  Scope is fixed at consent time and cannot be widened for an existing
+  token. Re-run the authorization flow including one of the scopes above.
 ```
 
 ## Features
