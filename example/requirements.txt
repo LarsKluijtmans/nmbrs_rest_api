@@ -3,4 +3,4 @@
 nmbrs-rest-api
 
 # Only used by this example, to read .env. The SDK does not depend on it.
-python-dotenv>=1.0
+python-dotenv>=1.2.2
