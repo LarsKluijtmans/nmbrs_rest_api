@@ -68,7 +68,8 @@ NmbrsError
 │   ├── PermissionError              403
 │   │   ├── InsufficientScopeError       403 where a required scope was not granted
 │   │   ├── DataAccessError              40303, 40305
-│   │   └── SubscriptionError            40304
+│   │   ├── SubscriptionError            40304
+│   │   └── MultipleDebtorConsentsError  40306
 │   ├── NotFoundError                404
 │   │   ├── ResourceNotFoundError        40401
 │   │   └── CompanyNotFoundError         40404
@@ -140,6 +141,7 @@ _BY_CODE: dict[int, type[APIError]] = {
     40303: DataAccessError,
     40304: SubscriptionError,
     40305: DataAccessError,
+    40306: MultipleDebtorConsentsError,
     40401: ResourceNotFoundError,
     40404: CompanyNotFoundError,
     42908: RateLimitError,
@@ -295,6 +297,29 @@ Documented only in prose, with no title or type given:
 
 **Fix:** as 40303. Treat them as the same remedy; the distinction is Nmbrs-internal.
 
+#### 40306 — the endpoint refuses multi-debtor consent
+
+Not in the published code list; found against a live tenant.
+
+> *Not possible to use this call for multiple debtor consents. Consider using
+> GetCompaniesByDebtor endpoint instead.*
+
+→ `MultipleDebtorConsentsError`
+
+Nothing is wrong with the scope, and nothing is invisible to the token. `GET
+/api/companies` simply will not answer when consent spans more than one debtor.
+The generic "your login cannot see this debtor" hint is **not** shown for this code,
+because it would send you looking in exactly the wrong place.
+
+**Fix:** go per debtor. `api.companies()` does this for you - it catches 40306 and
+walks debtors instead, one request each, de-duplicated. Elsewhere:
+
+```python
+for debtor in api.debtors():
+    for company in debtor.companies():
+        ...
+```
+
 #### Insufficient scope
 
 Not a distinct Nmbrs code — the SDK detects it. When the operation requires a scope the
@@ -449,6 +474,7 @@ not intuition. The full mapping is in [authentication.md](./authentication.md#sc
 | `InsufficientScopeError` | Scope never granted | **You** — re-run consent with the scope | No |
 | `DataAccessError` (40303, 40305) | Login cannot see this debtor/company | **The customer's Nmbrs admin** | No |
 | `SubscriptionError` (40304) | Environment disabled, no valid subscription | **The customer**, with Nmbrs | No |
+| `MultipleDebtorConsentsError` (40306) | Endpoint does not support consent spanning several debtors | **You** — go per debtor; `api.companies()` already does | No |
 
 None are retryable. All three are permanent until someone acts.
 
