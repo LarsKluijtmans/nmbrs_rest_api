@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with the `python-version` used by the single-version jobs below.
+  DEFAULT_PYTHON: "3.12"
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # hatch-vcs derives the version from git history. A shallow checkout
+          # makes the version resolve wrong (or fail outright).
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+      - name: ruff format
+        run: ruff format --check --diff .
+
+      - name: mypy
+        run: mypy
+
+      - name: Generated files match the vendored spec
+        # _scopes.py drives the scope-aware 403 diagnosis. If it drifts from the
+        # spec the SDK starts naming the wrong scopes, which is worse than saying
+        # nothing at all.
+        run: python tools/generate_scopes.py --check
+
+  test:
+    name: Test py${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # The project is developed on Windows, so keep it in the matrix.
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+
+      - name: pytest
+        run: pytest --cov=nmbrs_rest --cov-report=term-missing
+
+  package:
+    name: Build and validate distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - run: python -m pip install --upgrade pip build twine packaging
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: twine check
+        run: twine check --strict dist/*
+
+      - name: Assert version is uploadable
+        # PyPI and TestPyPI reject any version containing a local segment
+        # (e.g. 0.1.1.dev3+g1a2b3c4). Staging publishes untagged commits, so this
+        # invariant has to hold on every commit, not just on tags. It is enforced
+        # by `local_scheme = "no-local-version"` in pyproject.toml.
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          from packaging.utils import parse_wheel_filename
+
+          wheel = next(Path("dist").glob("*.whl"))
+          _, version, _, _ = parse_wheel_filename(wheel.name)
+          print(f"built version: {version}")
+          if version.local is not None:
+              sys.exit(
+                  f"FAIL: version {version} carries local segment {version.local!r}; "
+                  "PyPI will reject this upload."
+              )
+          print("OK: version is uploadable")
+          PY
+
+      - name: Verify py.typed is packaged
+        # PEP 561: without this marker inside the installed package, type checkers
+        # silently ignore our annotations for downstream users.
+        run: |
+          python - <<'PY'
+          import sys, zipfile
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(wheel).namelist()
+          if "nmbrs_rest/py.typed" not in names:
+              sys.exit(f"FAIL: py.typed missing from wheel. Contents: {names}")
+          print("OK: py.typed present")
+          PY
