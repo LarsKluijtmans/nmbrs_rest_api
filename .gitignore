@@ -219,3 +219,9 @@ __marimo__/
 
 .specsmd/
 .claude/
+
+# Nmbrs tokens written by scripts/login.py. These contain a live refresh token,
+# which is equivalent to a password - never commit one.
+.nmbrs-tokens.json
+*.nmbrs-tokens.json
+.nmbrs-tokens*.json
