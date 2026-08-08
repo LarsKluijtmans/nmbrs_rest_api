@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,13 +11,19 @@ import httpx
 
 from nmbrs_rest._scopes import OFFLINE_ACCESS, REQUIRED_SCOPES
 from nmbrs_rest.auth import AuthorizationRequest, OAuth
-from nmbrs_rest.errors import NmbrsConfigError, NotAuthenticatedError
+from nmbrs_rest.errors import (
+    MultipleDebtorConsentsError,
+    NmbrsConfigError,
+    NotAuthenticatedError,
+)
 from nmbrs_rest.pagination import Page
 from nmbrs_rest.resources.company import Company
 from nmbrs_rest.resources.debtor import Debtor
 from nmbrs_rest.resources.employee import Employee
 from nmbrs_rest.tokens import CallbackTokenStore, MemoryTokenStore, Token
 from nmbrs_rest.transport import DEFAULT_BASE_URL, Transport
+
+logger = logging.getLogger(__name__)
 
 TOKEN_KEY = "default"
 
@@ -306,8 +313,33 @@ class Nmbrs:
         return self._debtor(debtor_id, None)
 
     def companies(self) -> list[Company]:
-        """``GET /api/companies`` - every company this token can see."""
-        return [self._company(str(row.get("companyId", "")), row) for row in self._all(COMPANIES)]
+        """Every company this token can see.
+
+        Normally one request to ``GET /api/companies``. That endpoint refuses a token
+        consented for more than one debtor (40306), so in that case the debtors are
+        walked instead - same result, one request per debtor. Nothing to configure;
+        the fallback only runs when the direct call is rejected.
+        """
+        try:
+            rows = self._all(COMPANIES)
+        except MultipleDebtorConsentsError:
+            logger.debug("/api/companies refused multi-debtor consent; going via debtors")
+            return self._companies_via_debtors()
+        return [self._company(str(row.get("companyId", "")), row) for row in rows]
+
+    def _companies_via_debtors(self) -> list[Company]:
+        """Collect companies one debtor at a time, de-duplicated and registered."""
+        found: list[Company] = []
+        seen: set[str] = set()
+        for debtor in self.debtors():
+            for company in debtor.companies():
+                if company.id in seen:
+                    continue
+                seen.add(company.id)
+                # Re-register through the client so `api.company(id)` keeps returning
+                # the same object, and its cache with it.
+                found.append(self._company(company.id, company.raw))
+        return found
 
     def company(self, company_id: str) -> Company:
         return self._company(company_id, None)

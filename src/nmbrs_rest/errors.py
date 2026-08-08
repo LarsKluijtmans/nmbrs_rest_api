@@ -28,6 +28,7 @@ __all__ = [
     "InvalidRequestError",
     "InvalidTokenError",
     "MissingTokenError",
+    "MultipleDebtorConsentsError",
     "NmbrsConfigError",
     "NmbrsConnectionError",
     "NmbrsError",
@@ -347,6 +348,30 @@ class SubscriptionError(PermissionError):
     """40304. The customer's Nmbrs environment is disabled."""
 
 
+class MultipleDebtorConsentsError(PermissionError):
+    """40306. The endpoint does not support a token consented for several debtors.
+
+    Nothing is wrong with the scope or with the token. ``GET /api/companies``
+    simply refuses to answer when consent spans more than one debtor, and the
+    per-debtor endpoint has to be used instead.
+
+    The SDK handles the common case: :meth:`Nmbrs.companies` falls back to walking
+    debtors automatically. This is raised when that fallback is unavailable or has
+    itself failed.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault(
+            "hint",
+            "  Consent spans more than one debtor, which this endpoint does not\n"
+            "  support. Scope is not the problem. Go via the debtor instead:\n\n"
+            "      for debtor in api.debtors():\n"
+            "          for company in debtor.companies():\n"
+            "              ...",
+        )
+        super().__init__(**kwargs)
+
+
 class NotFoundError(APIError):
     """404."""
 
@@ -396,6 +421,7 @@ _BY_CODE: Final[dict[int, type[APIError]]] = {
     40303: DataAccessError,
     40304: SubscriptionError,
     40305: DataAccessError,
+    40306: MultipleDebtorConsentsError,
     40401: ResourceNotFoundError,
     40404: CompanyNotFoundError,
     42908: RateLimitError,
@@ -525,11 +551,13 @@ def exception_for(
         # Scope is satisfied, so this is a data-access restriction. Say so, since
         # the remedy is the customer's admin rather than a code change.
         #
-        # SubscriptionError (40304) is excluded: a disabled environment has nothing
-        # to do with scope, and the hint would be actively misleading.
+        # Two subclasses are excluded because the generic hint would be actively
+        # misleading for them: a disabled environment (40304) has nothing to do with
+        # scope, and multi-debtor consent (40306) is not a visibility problem at all
+        # - the token can see the debtors, the endpoint just will not answer.
         if (
             issubclass(cls, PermissionError)
-            and not issubclass(cls, SubscriptionError)
+            and not issubclass(cls, SubscriptionError | MultipleDebtorConsentsError)
             and operation is not None
             and operation.granted_scopes
         ):

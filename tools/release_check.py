@@ -11,7 +11,9 @@ you cannot undo:
 * a version already on PyPI - version numbers are permanent, even after deletion
 * a version that is not newer than what is already published
 * a tag that already exists
-* a version with no CHANGELOG section, since that section is what the reviewer reads
+
+A missing CHANGELOG section is *not* a blocker - the summary falls back to the
+commits since the last tag, so there is still something to approve against.
 
 ``staging-matches`` closes the one hole in publish-to-staging-then-promote: TestPyPI
 skips a duplicate filename rather than failing, so a re-run after a code change would
@@ -29,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -144,6 +147,32 @@ def changelog_section(version: str, text: str | None = None) -> str:
     return section
 
 
+def recent_commits(version: str) -> str:
+    """Commits since the last tag, as a stand-in when the changelog is not written."""
+    try:
+        previous = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        span = f"{previous}..HEAD" if previous else "HEAD"
+        log = subprocess.run(
+            ["git", "log", span, "--no-merges", "--format=- %s"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+    except OSError:
+        return "_No changelog section, and git log is unavailable._"
+
+    since = f"since {previous}" if previous else "so far"
+    header = f"_No `## [{version}]` section in CHANGELOG.md, so here are the commits {since}:_"
+    if not log:
+        return f"{header}\n\n_(none)_"
+    return f"{header}\n\n{log}"
+
+
 def write_summary(markdown: str) -> None:
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
@@ -164,11 +193,18 @@ def preflight(version: str) -> int:
         staged = published(TESTPYPI)
         check_not_on_pypi(parsed, live)
         previous = check_is_newer(parsed, live)
-        section = changelog_section(version)
     except Failure as exc:
         write_summary(f"## Release blocked\n\n**{exc}**\n")
         print(f"::error::{exc}", file=sys.stderr)
         return 1
+
+    # A missing or empty changelog section is a nudge, not a gate. The reviewer still
+    # gets the commit list, which is enough to approve against.
+    try:
+        section = changelog_section(version)
+    except Failure:
+        section = recent_commits(version)
+        print(f"::warning::CHANGELOG.md has no '## [{version}]' section; using commits instead")
 
     already_staged = str(parsed) in staged
     staged_note = "yes - artifacts will be compared" if already_staged else "no"

@@ -9,7 +9,12 @@ import pytest
 
 from nmbrs_rest import Company, Debtor, Employee, Nmbrs
 from nmbrs_rest.client import EPOCH
-from nmbrs_rest.errors import NmbrsConfigError, NotAuthenticatedError, ResourceNotFoundError
+from nmbrs_rest.errors import (
+    MultipleDebtorConsentsError,
+    NmbrsConfigError,
+    NotAuthenticatedError,
+    ResourceNotFoundError,
+)
 from nmbrs_rest.tokens import Token
 from tests.helpers import SUBSCRIPTION_KEY
 
@@ -336,3 +341,115 @@ def test_an_employee_from_the_wrong_company_says_so() -> None:
     api = build(handler=lambda _r: envelope([]), access_token="at-1")
     with pytest.raises(ResourceNotFoundError, match="is not in company"):
         api.employee("c-1", "e-does-not-exist")
+
+
+# --------------------------------------------------------------------------- #
+# Multi-debtor consent (40306)
+# --------------------------------------------------------------------------- #
+
+
+def forbidden_multi_debtor() -> httpx.Response:
+    return httpx.Response(
+        403,
+        json={
+            "code": 40306,
+            "type": "authenticationError",
+            "title": "Unauthorized",
+            "detail": (
+                "Not possible to use this call for multiple debtor consents. "
+                "Consider using GetCompaniesByDebtor endpoint instead."
+            ),
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+
+def test_40306_maps_to_its_own_error_with_a_usable_hint() -> None:
+    from nmbrs_rest.errors import Operation, exception_for
+
+    error = exception_for(
+        status_code=403,
+        body=forbidden_multi_debtor().content,
+        content_type="application/json",
+        operation=Operation(
+            "GET", "/api/companies", "/api/companies", frozenset({"company.info.read"})
+        ),
+    )
+    assert isinstance(error, MultipleDebtorConsentsError)
+
+    message = str(error)
+    assert "debtor.companies()" in message
+    # The generic 403 hint would be wrong here: the token CAN see the debtors.
+    assert "cannot see this debtor or company" not in message
+
+
+def test_companies_falls_back_to_walking_debtors() -> None:
+    """The user's token spans two debtors, so /api/companies refuses outright."""
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        paths.append(path)
+        if path == "/api/companies":
+            return forbidden_multi_debtor()
+        if path == "/api/debtors":
+            return envelope(
+                [{"debtorId": "d-1", "name": "One"}, {"debtorId": "d-2", "name": "Two"}]
+            )
+        if path == "/api/debtors/d-1/companies":
+            return envelope([{"companyId": "c-1", "name": "Acme"}])
+        if path == "/api/debtors/d-2/companies":
+            return envelope([{"companyId": "c-2", "name": "Globex"}])
+        raise AssertionError(f"unexpected {path}")
+
+    api = build(handler=handler, access_token="at-1")
+    companies = api.companies()
+
+    assert [(c.id, c.name) for c in companies] == [("c-1", "Acme"), ("c-2", "Globex")]
+    assert paths == [
+        "/api/companies",
+        "/api/debtors",
+        "/api/debtors/d-1/companies",
+        "/api/debtors/d-2/companies",
+    ]
+
+
+def test_the_fallback_registers_companies_so_caching_still_works() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/companies":
+            return forbidden_multi_debtor()
+        if path == "/api/debtors":
+            return envelope([{"debtorId": "d-1"}])
+        return envelope([{"companyId": "c-1", "name": "Acme"}])
+
+    api = build(handler=handler, access_token="at-1")
+    company = api.companies()[0]
+
+    assert api.company("c-1") is company, "a fresh object would discard the cache"
+    assert api.company("c-1").name == "Acme"
+
+
+def test_a_company_in_two_debtors_is_returned_once() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/companies":
+            return forbidden_multi_debtor()
+        if path == "/api/debtors":
+            return envelope([{"debtorId": "d-1"}, {"debtorId": "d-2"}])
+        return envelope([{"companyId": "c-1", "name": "Acme"}])
+
+    api = build(handler=handler, access_token="at-1")
+    assert [c.id for c in api.companies()] == ["c-1"]
+
+
+def test_a_single_debtor_token_never_touches_the_fallback() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return envelope([{"companyId": "c-1", "name": "Acme"}])
+
+    api = build(handler=handler, access_token="at-1")
+    assert [c.id for c in api.companies()] == ["c-1"]
+    assert paths == ["/api/companies"], "the fallback must not run when the direct call works"

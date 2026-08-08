@@ -45,6 +45,11 @@ class Debtor(Resource, DebtorReads):
         value = self._data.get("number")
         return value if isinstance(value, int) else None
 
+    @property
+    def raw(self) -> dict[str, Any]:
+        """The listing row this object was built from, as the API sent it."""
+        return dict(self._data)
+
     def _path_values(self) -> dict[str, str]:
         return {"debtorId": self._id}
 

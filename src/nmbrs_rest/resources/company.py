@@ -63,6 +63,11 @@ class Company(Resource, CompanyReads):
         value = self._data.get("debtorId")
         return value if isinstance(value, str) else None
 
+    @property
+    def raw(self) -> dict[str, Any]:
+        """The listing row this object was built from, as the API sent it."""
+        return dict(self._data)
+
     def _path_values(self) -> dict[str, str]:
         return {"companyId": self._id}
 

@@ -59,6 +59,11 @@ class Employee(EmployeeScoped, EmployeeReads):
     def _employee_id(self) -> str:
         return self._id
 
+    @property
+    def raw(self) -> dict[str, Any]:
+        """The basic-info row this object was built from, as the API sent it."""
+        return dict(self._basic)
+
     def _path_values(self) -> dict[str, str]:
         return {"companyId": self._company_id, "employeeId": self._id}
 
