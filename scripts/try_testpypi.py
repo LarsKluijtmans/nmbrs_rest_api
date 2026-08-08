@@ -63,15 +63,28 @@ def available_versions() -> list[str]:
     return [str(v) for v in versions]
 
 
-def wait_for_upload(deadline: float, known: set[str]) -> list[str]:
-    """Poll until a version appears that we did not already know about."""
+def wait_for_upload(deadline: float, known: set[str], target: str | None = None) -> list[str]:
+    """Poll until the version we care about shows up.
+
+    With ``target`` that is a specific version - the release workflow knows exactly
+    what it just uploaded, and waiting for "something new" would sit out the whole
+    timeout because the upload already happened. Without one, any version we did not
+    see at startup counts.
+    """
     while True:
         versions = available_versions()
-        fresh = set(versions) - known
-        if fresh:
-            log(f"new on TestPyPI: {', '.join(sorted(fresh))}")
-            return versions
+        if target is not None:
+            if target in versions:
+                log(f"{target} is on TestPyPI")
+                return versions
+        else:
+            fresh = set(versions) - known
+            if fresh:
+                log(f"new on TestPyPI: {', '.join(sorted(fresh))}")
+                return versions
         if time.monotonic() >= deadline:
+            if target is not None:
+                sys.exit(f"{target} did not appear on TestPyPI before the timeout")
             log("timed out waiting; using whatever is there now")
             return versions
         time.sleep(10)
@@ -81,13 +94,8 @@ def venv_python(root: Path) -> Path:
     return root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
-def run(python: Path, *args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(python), *args],
-        check=True,
-        text=True,
-        **kwargs,  # type: ignore[arg-type]
-    )
+def run(python: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([str(python), *args], check=True, text=True)
 
 
 def newest(python: Path, versions: list[str]) -> str:
@@ -134,8 +142,9 @@ def main() -> int:
 
     versions = sorted(known)
     if args.wait:
-        log(f"waiting up to {args.wait}s for a new upload")
-        versions = wait_for_upload(time.monotonic() + args.wait, known)
+        wanted = f"{args.version} to appear" if args.version else "a new upload"
+        log(f"waiting up to {args.wait}s for {wanted}")
+        versions = wait_for_upload(time.monotonic() + args.wait, known, args.version)
 
     if not versions and not args.version:
         sys.exit(
