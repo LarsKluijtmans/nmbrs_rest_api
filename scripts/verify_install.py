@@ -53,7 +53,7 @@ def _token(access: str = "access-token-value") -> Any:
         access_token=access,
         refresh_token="refresh-token-value",
         expires_at=_future(),
-        scopes=frozenset({"company.info.read", "employee.employment.read"}),
+        scopes=("company.info.read", "employee.employment.read"),
     )
 
 

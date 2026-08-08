@@ -11,7 +11,26 @@ human-written record. Update it before tagging.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Releases are one button.** `Actions → Release → Run workflow`, type the version,
+  approve. The workflow validates, builds, publishes to TestPyPI, installs from there
+  into a clean virtualenv and runs the verification checks, then waits for approval
+  before touching PyPI. No local commands, no tag to push.
+- The version now comes from the workflow input rather than from a git tag
+  (`SETUPTOOLS_SCM_PRETEND_VERSION`), and the tag is created *after* PyPI accepts the
+  upload. A run that fails or is rejected leaves no tag to clean up, and every tag
+  records something that actually shipped.
+- `tools/release_check.py` refuses a version PyPI would reject, one already published,
+  one that is not newer than the latest, a tag that exists, or a version with no
+  `CHANGELOG.md` section — and writes the version plus that changelog section into the
+  run summary, so the approval is made against something readable.
+- The staged wheel's hash is compared against the build being promoted. TestPyPI skips
+  duplicate filenames rather than replacing them, so a re-run after a code change would
+  otherwise verify the old artifact and promote the new one unverified.
+- `scripts/try_testpypi.py --version X --wait N` now polls for that specific version
+  instead of for "anything new", which previously sat out the whole timeout when the
+  upload had already landed.
 
 ## [0.0.1] - 2026-08-08
 
