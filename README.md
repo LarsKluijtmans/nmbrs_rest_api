@@ -1,6 +1,6 @@
 # nmbrs-rest-api
 
-Python SDK for the [Nmbrs](https://www.nmbrs.com/) public REST API, with lazy-loading
+Python SDK for the [Nmbrs](https://www.nmbrs.com/) public REST API, with cached
 debtor, company and employee objects.
 
 [![PyPI](https://img.shields.io/pypi/v/nmbrs-rest-api.svg)](https://pypi.org/project/nmbrs-rest-api/)
@@ -8,12 +8,9 @@ debtor, company and employee objects.
 [![License](https://img.shields.io/pypi/l/nmbrs-rest-api.svg)](https://github.com/LarsKluijtmans/nmbrs_rest_api/blob/main/LICENSE)
 [![CI](https://github.com/LarsKluijtmans/nmbrs_rest_api/actions/workflows/ci.yml/badge.svg)](https://github.com/LarsKluijtmans/nmbrs_rest_api/actions/workflows/ci.yml)
 
-> **Status: partially implemented.** Authentication, errors, transport and pagination are
-> built, tested and usable today — see [What works today](#what-works-today). The
-> `Nmbrs` facade and the lazy debtor/company/employee objects are **not** implemented
-> yet, so the snippet under [The idea](#the-idea) does not run: `from nmbrs_rest import
-> Nmbrs` raises `ImportError`. It is the design target, kept here because it is what the
-> library is being built towards.
+> **Status: usable, pre-1.0.** Every read endpoint is implemented and tested; writes are
+> not (see [Scope](#scope)). Responses come back as plain dicts for now — typed models
+> are the next step. The API may still change before 1.0.
 
 ## Install
 
@@ -24,101 +21,85 @@ pip install nmbrs-rest-api
 The distribution is `nmbrs-rest-api`; the import name is `nmbrs_rest`. See
 [Relationship to the SOAP SDK](#relationship-to-the-soap-sdk) for why they differ.
 
-## The idea
-
-Nmbrs' REST API is company-scoped: almost everything about an employee is only readable
-through a company-wide endpoint, and the single-employee endpoint doesn't even tell you
-which company an employee belongs to. That makes straightforward code annoying to write.
-
-This SDK hides that. You ask for an employee and read attributes; it works out which
-requests to make, when, and caches them.
+## Quickstart
 
 ```python
-# TARGET API - not implemented yet. See "What works today" below for what runs now.
 from nmbrs_rest import Nmbrs
 
-api = Nmbrs(
-    subscription_key="...",
-    access_token="...",
-    refresh_token="...",
-    client_id="...",
-    client_secret="...",
-    on_token_refresh=save_tokens,   # refresh tokens rotate - persist them
-)
+api = Nmbrs(client_id, client_secret, subscription_key)
 
-employee = api.employee("ecbf546b-5c94-4eec-8557-32f5b65d30e2")
+# 1. Send the user here to approve. Nmbrs supports only the authorization code
+#    flow, so this step needs a human exactly once.
+url = api.login("https://yourapp.example/callback")
 
-employee.personal_info        # GET /api/employees/{id}
-employee.contracts            # resolves the company, then fetches + caches
-employee.salaries             # cached company context, one request
-employee.leave_requests(year=2026)
+# 2. Hand back the code from the redirect.
+api.authenticate(code)
+
+# 3. Persist these. The refresh token is good for 30 days.
+api.access_token
+api.refresh_token
 ```
 
-Nothing is fetched until you touch it, and nothing is fetched twice.
-
-Company-first works too, and skips the company lookup entirely:
+Next time, skip the browser entirely:
 
 ```python
-company = api.company("ad3562fc-b050-4de7-9eb0-1751eefa680c")
-
-for employee in company.employees():      # auto-paginating
-    print(employee.personal_info.first_name)
-
-employee = company.employee("ecbf546b-...")
+api = Nmbrs(client_id, client_secret, subscription_key, refresh_token=saved)
 ```
 
-## What works today
-
-Everything below the resource layer. You authenticate, make requests, get paginated
-results back and get precise errors — you just do it against paths rather than against
-`Employee` objects.
-
-**1. Get a token.** Nmbrs only supports the OAuth authorization code flow, so a human
-has to approve once in a browser. This does that and writes the result to a file:
-
-```bash
-python scripts/login.py --client-id ... --client-secret ... --subscription-key ...
-```
-
-It opens your browser, catches the redirect on `localhost:8080`, exchanges the code,
-saves the tokens, and — if you pass `--subscription-key` — makes a real
-`GET /api/companies` call to prove the whole chain works. The redirect URI must be
-registered on your client in the Nmbrs portal first.
-
-**2. Use it.** The token store handles refresh and rotation for you:
+Then read:
 
 ```python
-from nmbrs_rest import FileTokenStore, OAuth, Page, Transport, unwrap_one
+for company in api.companies():
+    print(company.name)
 
-oauth = OAuth(client_id="...", client_secret="...")
-api = Transport(
-    subscription_key="...",
-    oauth=oauth,
-    token_store=FileTokenStore(".nmbrs-tokens.json"),
-)
+    for employee in api.employees(company.id):
+        print(employee.full_name)              # free, came with the listing
 
-# Single read. Nmbrs wraps every response in {"data": [...]}, even for one record,
-# so unwrap_one pulls the single item out and raises if there isn't exactly one.
-payload = api.get_json("/api/companies/{companyId}", path="/api/companies/ad3562fc-...")
-company = unwrap_one(payload, template="/api/companies/{companyId}")
-
-# Auto-paginating read; nothing is fetched until you iterate.
-for employee in Page(
-    api,
-    "/api/companies/{companyId}/employees",
-    path="/api/companies/ad3562fc-.../employees",
-    factory=lambda row: row,
-):
-    print(employee["employeeId"])
+        employee.contracts()                   # one request, then cached
+        employee.salaries()
+        employee.fixed_hours(year=2026, period=3)
 ```
 
-Access tokens are refreshed before they expire and again if the server rejects one, the
-request is replayed, and the rotated refresh token is persisted before use. Rate limits
-and transient 5xx are retried with jittered backoff.
+Or go straight to one employee, in a single request:
 
-**3. When something is forbidden, it tells you why.** The OpenAPI spec declares the
-scopes each of the 123 operations needs, so a 403 names the one you are missing rather
-than saying "forbidden":
+```python
+employee = api.employee(company_id, employee_id)
+```
+
+## What this hides
+
+Nmbrs' REST API is company-scoped and inconsistent in ways that leak into every
+integration written against it. The SDK absorbs that:
+
+**Employee data is only readable through the owning company.** There is no
+employee-to-company lookup, so both ids are always required — `api.employee(company_id,
+employee_id)`. Nothing scans, nothing is unexpectedly slow.
+
+**Responses are wrapped twice.** Everything arrives as `{"data": [...]}`, even a single
+record, and employee reads are wrapped again as `{"employeeId": ..., "contracts": [...]}`
+— with a payload key that differs per endpoint (`contracts`, `info`,
+`EmployeeLeaveRequests`). You get the payload.
+
+**Three endpoints ignore `employeeId`.** `privateInfos`, `extraFields` and
+`useraccounts` return the whole company whatever you ask for. The SDK filters them
+client-side so `employee.private_info()` means what it says.
+
+**Paging is manual.** Every list read follows pages until they run out.
+
+**Reads take filters, so they are methods.** 33 of the 38 employee endpoints accept
+`year`, `period` or `created_from`, which an attribute cannot express. Results are cached
+per argument set, so `employee.contracts()` twice is one request but
+`employee.contracts(created_from=...)` is its own question:
+
+```python
+employee.contracts()                          # request
+employee.contracts()                          # cached
+employee.contracts(created_from=date(2026, 1, 1))   # request
+employee.refresh()                            # drop this object's cache
+```
+
+**403s name the scope you are missing.** The spec declares required scopes per
+operation, so the SDK can tell you which one to re-consent with:
 
 ```
 InsufficientScopeError: [403/40303] GET /api/companies/ad3562fc/employees/salaries: no detail provided
@@ -130,17 +111,58 @@ InsufficientScopeError: [403/40303] GET /api/companies/ad3562fc/employees/salari
   token. Re-run the authorization flow including one of the scopes above.
 ```
 
+## Refresh tokens rotate
+
+Nmbrs invalidates the old refresh token every time it issues a new one. `api.access_token`
+and `api.refresh_token` are live properties rather than snapshots, so they always reflect
+the latest values — but if your app persists them, ask to be told instead of polling:
+
+```python
+def save(token):
+    db.store(token.access_token, token.refresh_token, token.expires_at)
+
+api = Nmbrs(client_id, client_secret, subscription_key,
+            refresh_token=saved, on_token_refresh=save)
+```
+
+Persisting a stale refresh token is the single most common way a Nmbrs integration dies
+overnight. See [docs/authentication.md](https://github.com/LarsKluijtmans/nmbrs_rest_api/blob/main/docs/authentication.md).
+
+## Web apps
+
+`login()` remembers the CSRF `state`, the PKCE verifier and the redirect URI on the
+client object, which is all a script needs. A web app usually handles the redirect in a
+different request or worker, so pass them back explicitly:
+
+```python
+url = api.login(redirect_uri, scopes, pkce=True)
+session["state"] = api.pending_login.state
+session["verifier"] = api.pending_login.code_verifier
+
+# ... later, in the callback handler ...
+api.authenticate(code, state=session["state"], code_verifier=session["verifier"])
+```
+
+## Scope
+
+Reads only. All 84 GET operations are implemented: 34 employee reads, 19 company reads,
+7 debtor reads, plus the listings. The 39 write operations are not — they are planned for
+a later release.
+
+The read methods are generated from the vendored OpenAPI spec, and CI fails if they drift
+from it.
+
 ## Features
 
-- **Lazy loading** — attribute access triggers the request; results are cached per object.
-- **Automatic pagination** — iterate a collection, the SDK walks the pages.
-- **Company resolution** — `api.employee(id)` works standalone, resolving and caching the
-  owning company in memory when it first needs it.
-- **OAuth 2.0 handled** — authorization code flow, PAR, and automatic token refresh with a
-  pluggable `TokenStore`.
+- **Automatic pagination** — every list read follows pages until they run out.
+- **Per-object caching** — keyed on the filter arguments, so the same question is asked
+  once and a different question is not served a stale answer.
+- **OAuth 2.0 handled end to end** — `login()`, `authenticate()`, refresh-on-401 with
+  replay, and rotation persisted before use.
 - **Meaningful errors** — a 403 tells you *which scope* is missing for *which operation*,
   not just "Forbidden".
-- **Typed** — ships `py.typed`; models generated from the official OpenAPI spec.
+- **Typed** — ships `py.typed`; read methods generated from the official OpenAPI spec,
+  with CI failing if they drift from it.
 
 ## Documentation
 

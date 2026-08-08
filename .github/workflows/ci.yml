@@ -49,7 +49,14 @@ jobs:
         # _scopes.py drives the scope-aware 403 diagnosis. If it drifts from the
         # spec the SDK starts naming the wrong scopes, which is worse than saying
         # nothing at all.
-        run: python tools/generate_scopes.py --check
+        #
+        # resources/_generated.py is the read surface itself: endpoint paths,
+        # filter names and the per-endpoint payload key used to unwrap responses.
+        # Drift here means methods that request the wrong path or return the
+        # wrapper instead of the payload.
+        run: |
+          python tools/generate_scopes.py --check
+          python tools/generate_resources.py --check
 
   test:
     name: Test py${{ matrix.python-version }} on ${{ matrix.os }}

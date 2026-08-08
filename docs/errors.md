@@ -77,7 +77,7 @@ NmbrsError
 │   ├── RateLimitError               429
 │   │   └── QuotaExceededError           42909, not retryable
 │   └── ServerError                  500, 502, 503
-└── EmployeeResolutionError          SDK-level: owning company could not be determined
+└── NotAuthenticatedError            SDK-level: a read was attempted before any token existed
 ```
 
 ```python
@@ -500,7 +500,7 @@ Full detail in [authentication.md](./authentication.md#identity-server-errors).
 | `NmbrsConnectionError` | DNS, TLS, connection reset, proxy failure | Check network and proxy configuration |
 | `TokenStoreError` | Store load/save/delete failed | Check permissions and disk. A failed `save()` after a refresh is critical — the rotated token may be lost |
 | `ReauthorizationRequired` | The grant is terminally dead | Send the customer through consent again. Carries `.token_key` so you know which one |
-| `EmployeeResolutionError` | `api.employee(id)` could not find an owning company | The employee is not in any company this token can see, or the id is wrong. Pass `company_id=` explicitly to skip resolution |
+| `NotAuthenticatedError` | A read was attempted with no token | Finish the flow (`api.login()` then `api.authenticate(code)`), or construct with `refresh_token=` from a previous session |
 
 The subscription key is validated **locally** before the first request. A missing key
 otherwise produces a confusing 401 that looks like a token problem.
@@ -523,8 +523,7 @@ The table to reach for when something is broken and the exception alone is not e
 | 400 on a list call | `pageSize` above the maximum of 100 | `ValidationError` | Cap at 100 |
 | Empty `data` on a single-item read | Resource does not exist | `ResourceNotFoundError` | Verify the id |
 | Duplicate or missing rows across pages | Data changed while paginating | none | Nmbrs offers no snapshot. Use `createdFrom`/`changedFrom` where available |
-| `api.employee(id)` is very slow the first time | Company resolution scanning all visible companies | none | Use `api.company(cid).employee(id)`, or `api.prime(company_id)` |
-| `EmployeeResolutionError` on a known employee | Employee outside this token's visible companies, or moved company | `EmployeeResolutionError` | Pass `company_id=` explicitly |
+| `api.employee(company_id, employee_id)` raises `ResourceNotFoundError` | The employee is not in that company, or the id belongs to another debtor | `ResourceNotFoundError` | Employee ids are only meaningful inside their owning company; confirm which company it belongs to |
 | Parse error instead of a clean error object | Gateway returned HTML on 502/503 | `ServerError` | Already handled; report if you see a raw parse error |
 | Retries make throttling worse | No jitter, fleet retrying in lockstep | `RateLimitError` | Use the SDK's backoff rather than your own loop |
 | Backoff never recovers | Quota exhausted, not throttled | `QuotaExceededError` | Check the code: 42909 is not retryable |
@@ -597,12 +596,30 @@ Do not enable it in production.
 
 ### Reducing request volume
 
-The company-scoped design means naive per-employee access is expensive: reading
-`.contracts` for 200 employees individually is 200 requests against the same underlying
-company endpoint. Prefer the bulk path, which fetches once and populates every employee:
+The company-scoped design makes naive per-employee access expensive. Each
+`employee.contracts()` sends `?employeeId=` to the *company* endpoint, so reading
+contracts for 200 employees is 200 requests against the same underlying URL:
 
 ```python
-company.prefetch("contracts")            # one paginated pass
-for employee in company.employees():
-    employee.contracts                   # served from cache, no request
+for employee in company.employees():     # 1 request (plus paging)
+    employee.contracts()                 # 1 request each - 200 in total
 ```
+
+The same endpoint returns every employee's contracts in one paginated pass when
+`employeeId` is omitted, so that work can be done in a single call today by going
+through the company rather than the employee:
+
+```python
+rows = company._read_list(                     # 1 request (plus paging)
+    "/api/companies/{companyId}/employees/contracts", {}
+)
+by_employee = {row["employeeId"]: row["contracts"] for row in rows}
+```
+
+A supported `Company.prefetch(...)` that does this and populates each employee's cache
+is planned; until then the private call above is the escape hatch, and caching still
+means repeated reads of the *same* employee cost nothing extra.
+
+Three endpoints - `privateInfos`, `extraFields` and `useraccounts` - ignore `employeeId`
+entirely, so `employee.private_info()` already pays for the whole company. Reading it for
+many employees of the same company is best done once through `Company`.

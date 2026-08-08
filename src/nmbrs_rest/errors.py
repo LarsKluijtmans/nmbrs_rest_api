@@ -20,7 +20,6 @@ __all__ = [
     "AuthenticationError",
     "CompanyNotFoundError",
     "DataAccessError",
-    "EmployeeResolutionError",
     "IdentityServerError",
     "InsufficientScopeError",
     "InvalidClientError",
@@ -33,6 +32,7 @@ __all__ = [
     "NmbrsConnectionError",
     "NmbrsError",
     "NmbrsTimeoutError",
+    "NotAuthenticatedError",
     "NotFoundError",
     "PermissionError",
     "QuotaExceededError",
@@ -137,22 +137,24 @@ class TokenStoreError(NmbrsError):
     """
 
 
-class EmployeeResolutionError(NmbrsError):
-    """``api.employee(id)`` could not determine the owning company.
+class NotAuthenticatedError(NmbrsError):
+    """A request was attempted before there was any token to send.
 
-    The employee is not in any company this token can see, or the id is wrong.
-    Pass ``company_id=`` explicitly to skip resolution entirely.
+    Nmbrs supports the authorization code flow only, so the first token always
+    requires a human to approve in a browser.
     """
 
-    def __init__(self, employee_id: str, companies_searched: int) -> None:
-        self.employee_id = employee_id
-        self.companies_searched = companies_searched
+    def __init__(self, message: str | None = None) -> None:
         super().__init__(
-            f"Could not find employee {employee_id} in any of the "
-            f"{companies_searched} companies this token can see. Either the id is "
-            f"wrong, the employee belongs to a debtor this token was not consented "
-            f"for, or the employee is not a payroll employee. "
-            f"Pass company_id= explicitly if you already know it."
+            message
+            or (
+                "not authenticated. Either finish the authorization flow:\n"
+                "    url = api.login(redirect_uri, scopes)   # send the user here\n"
+                "    api.authenticate(code)                  # code from the redirect\n"
+                "or construct with a refresh token you saved earlier:\n"
+                "    Nmbrs(client_id, client_secret, subscription_key, "
+                "refresh_token=...)"
+            )
         )
 
 

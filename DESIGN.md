@@ -73,8 +73,8 @@ GET /api/companies/{companyId}/employees/{resource}?employeeId={employeeId}
 ```
 
 And critically: **`GET /api/employees/{employeeId}` does not return the `companyId`.**
-So a bare `api.employee(id)` cannot reach most of its own data without first
-discovering which company owns it.
+There is no employee-to-company lookup anywhere in the API, which is why
+`api.employee()` takes both ids rather than resolving one from the other (§4).
 
 Three of those company-wide endpoints don't even accept an `employeeId` filter and
 must be fetched whole and filtered client-side:
@@ -91,255 +91,213 @@ must be fetched whole and filtered client-side:
 
 ### 3.1 Construction
 
+`Nmbrs` owns the whole lifecycle: credentials, consent, tokens, and the reads they
+unlock. The three credentials that are always needed are positional.
+
 ```python
 from nmbrs_rest import Nmbrs
 
+api = Nmbrs(client_id, client_secret, subscription_key)
+```
+
+Optional keyword arguments cover resuming and persistence:
+
+```python
 api = Nmbrs(
-    subscription_key="30d05593229f49c18856be06ebc47b24",
-    access_token="...",
-    refresh_token="...",              # optional; enables auto-refresh
-    client_id="...",                  # required to refresh
-    client_secret="...",
-    on_token_refresh=lambda tok: db.save(tok),   # rotating refresh tokens must be persisted
+    client_id, client_secret, subscription_key,
+    refresh_token=saved,                     # skip the browser entirely
+    on_token_refresh=lambda tok: db.save(tok),   # told on every rotation
+    redirect_uri="https://app.example/callback",
 )
 ```
 
-OAuth helpers live beside the client and require no `Nmbrs` instance:
+`OAuth`, `Transport`, `Page` and the token stores remain importable for anyone who
+wants to assemble their own stack; `Nmbrs` is a facade over them, not a replacement.
+
+### 3.2 The authorization flow
+
+Nmbrs supports the authorization code flow only, so the first token always needs a
+human. Two calls:
 
 ```python
-from nmbrs_rest.auth import OAuth
+url = api.login(redirect_uri, scopes)   # -> str, send the user here
+api.authenticate(code)                  # code from the redirect
 
-oauth = OAuth(client_id, client_secret, redirect_uri)
-url   = oauth.authorization_url(scopes=[...], state=...)        # standard flow
-url   = oauth.authorization_url(scopes=[...], state=..., par=True)  # PAR: POSTs /connect/par first
-token = oauth.exchange_code(code)     # -> Token(access_token, refresh_token, expires_at, scopes)
-token = oauth.refresh(refresh_token)
+api.access_token       # live properties, not snapshots
+api.refresh_token
+api.scopes             # what was actually granted
+api.expires_at
 ```
 
-### 3.2 Entry points
+`login()` remembers the CSRF `state`, the PKCE verifier and the redirect URI on the
+instance, which is all a script needs. RFC 6749 §4.1.3 requires the token exchange to
+present the *same* redirect URI as the authorization request, so carrying it is not
+optional. A web app handles the redirect in a different request, so both can be passed
+back explicitly:
 
 ```python
-api.debtors()                  # -> Page[Debtor], auto-paginating iterator
-api.debtor(debtor_id)          # -> Debtor  (no request yet)
-
-api.companies()                # -> Page[Company]
-api.company(company_id)        # -> Company (no request yet)
-
-api.employee(employee_id)      # -> Employee (no request yet, company resolved on demand)
-
-api.countries()                # static list
-api.user_info()
-api.subscription("hire")       # "hire" | "perform"
-api.document(task_id)
-api.salary_table(salary_table_id)
-api.end_contract_reasons(year)
+url = api.login(redirect_uri, scopes, pkce=True)
+state, verifier = api.pending_login.state, api.pending_login.code_verifier
+# ... later ...
+api.authenticate(code, state=state, code_verifier=verifier)
 ```
 
-### 3.3 Debtor
+`api.refresh()` forces a refresh; `api.logout()` revokes upstream and clears local state.
+
+**Rotation.** Nmbrs kills the old refresh token whenever it issues a new one. The token
+properties are live so they never go stale in place, but an application that *persists*
+them needs `on_token_refresh` — otherwise it stores a value that is dead by the time the
+process restarts. The callback fires after the in-memory copy is updated, so a failure
+is loud without leaving the client unusable.
+
+### 3.3 Entry points
 
 ```python
-d = api.debtor(debtor_id)
-d.info                    # GET /api/debtors/info, matched on this debtor
-d.companies               # -> list[Company]
-d.departments
-d.functions
-d.managers
-d.manager_user_accounts
-d.absence_case_managers
-d.accountant_contact
-d.tags
+api.debtors()                          # -> list[Debtor]
+api.debtor(debtor_id)                  # -> Debtor  (no request)
+
+api.companies()                        # -> list[Company]
+api.company(company_id)                # -> Company (no request)
+
+api.employees(company_id)              # -> list[Employee]
+api.employee(company_id, employee_id)  # -> Employee, one request
 ```
 
-### 3.4 Company
+Collections are eager: every page is fetched before the list is returned. `Page` remains
+available for streaming a large company without holding it in memory.
+
+`api.company(id)` returns the *same* object for the same id within a session. Caching
+lives on the resource, so handing back a fresh object each time would silently discard it.
+
+### 3.4 Reads are methods
+
+Attributes cannot express a filter, and 33 of the 38 employee endpoints take at least
+one — `year`, `period`, `created_from`, `changed_from`. So every read is a method, and
+the parentheses also mark where I/O happens:
 
 ```python
-c = api.company(company_id)
-
-c.employees()             # -> Page[Employee]   GET /api/companies/{id}/employees
-c.employees(employee_type="payroll,formerPayroll", created_from=...)
-c.employee(employee_id)   # -> Employee, company already known (no resolution needed)
-
-c.name, c.number, c.debtor_id   # from the company list payload; lazy-fetched if unknown
-c.period                        # GET /companies/{id}/period
-
-c.addresses
-c.bank_accounts
-c.contact_persons
-c.cost_centers
-c.cost_units
-c.hour_codes
-c.leave_groups
-c.schedules(year=..., period=...)
-c.salary_tables
-c.salary_table_content(version_id)
-c.svw_settings(year=..., period=...)
-c.wage_models(year=..., period=...)
-c.fixed_wage_components(year=..., period=...)
-c.variable_wage_components(year=...)
-c.extra_field_settings
-c.default_templates
-c.wage_taxes
-c.work_costs(year=...)
-c.pension_export
-
-c.runs(year=...)          # -> list[PayrollRun]
-c.run(payroll_run_id, year=...)
+employee.contracts()
+employee.salaries(created_from=date(2026, 1, 1))
+employee.fixed_hours(year=2026, period=3)
+employee.leave_requests(year=2026, status="Approved", request_type="Holiday")
 ```
 
-**Bulk prefetch.** Because employee sub-resources live on company-wide endpoints, reading
-one field across many employees one at a time is N requests against the *same* endpoint.
-`prefetch` makes the single paginated pass and populates every employee's cache:
+Cheap identity fields come free with the company listing and are plain attributes:
 
 ```python
-c.prefetch("contracts", "salaries")   # one paginated pass each
-for e in c.employees():
-    e.contracts                       # cache hit, no request
+employee.id, employee.company_id
+employee.first_name, employee.last_name, employee.prefix, employee.initials
+employee.employee_number, employee.employee_type, employee.full_name
 ```
 
-This is the payoff of the lazy-object design rather than a workaround for it — the naive
-loop stays correct, it is just slower.
+`employee.details()` fetches the composite record from `GET /api/employees/{id}`
+(`personalInfo`, `manager`, `department`, `function`, `address`) in one request.
 
-### 3.5 PayrollRun
+Company and debtor reads work the same way — `company.period()`,
+`company.wage_taxes(year=2026)`, `debtor.tags()` — and `debtor.companies()` returns
+`Company` objects rather than dicts.
 
-`year` is a **required** query param on the journal and SEPA endpoints, so it is
-bound at construction and reused.
+### 3.5 Caching
+
+Per object, keyed on the *normalised filter arguments*, not just the endpoint. Two
+identical calls are one request; a different filter is a different question and must not
+be served a stale answer:
 
 ```python
-r = c.run(run_id, year=2025)
-r.employees
-r.journals
-r.journals_by_cost_center
-r.journals_by_cost_center_unit
-r.journals_by_department
-r.journals_by_employee
-r.sepa(payment_date=None)
-r.wage_codes_xml(wage_codes=[100, 101])
+employee.contracts()                              # request
+employee.contracts()                              # cached
+employee.contracts(created_from=date(2026, 1, 1)) # request
+employee.cached                                   # 2 entries
+employee.refresh()                                # drop them
 ```
 
-### 3.6 Employee
+Caching is deliberately per object rather than global: a shared cache would need
+invalidation rules the API gives us no way to write.
 
-```python
-e = api.employee(employee_id)          # or api.company(cid).employee(eid)
+### 3.6 What the SDK normalises
 
-# --- from GET /api/employees/{id}, one request fills all five ---
-e.personal_info
-e.address
-e.department
-e.function
-e.manager
+| Upstream behaviour | What the caller sees |
+|---|---|
+| Everything wrapped in `{"data": [...]}`, even single records | the record, or the list |
+| Employee reads wrapped again as `{"employeeId": ..., "<payloadKey>": ...}`, key differing per endpoint | the payload |
+| `privateInfos`, `extraFields`, `useraccounts` ignore `employeeId` | filtered client-side, so the method means what it says |
+| Manual `pageNumber`/`pageSize` paging | pages followed automatically |
+| `date`/`datetime` filters needing ISO-8601 strings | pass Python objects |
+| `type` as a query parameter name | `request_type`, since `type` shadows a builtin |
+| Path segments like `costperhour`, `fixedWageComponents`, `privateInfos` | `cost_per_hour`, `fixed_wage_components`, `private_info` |
 
-# --- company-scoped, filtered by employeeId ---
-e.contracts
-e.employments
-e.salaries
-e.schedules
-e.bank_accounts
-e.cost_centers
-e.cost_per_hour(year=..., period=...)
-e.absences
-e.leave_requests(year=..., status=..., type=..., leave_group_id=...)
-e.leave_balances(leave_group_id=...)
-e.parental_leave(year=...)
-e.fixed_wage_components(year=..., period=...)
-e.variable_wage_components(year=..., period=...)
-e.svw_settings
-e.wage_tax_settings
-e.labour_agreement_settings
-e.lease_car
-e.children
+### 3.7 Generation
 
-# --- company-scoped, no employeeId filter: fetched whole, filtered locally ---
-e.extra_fields
-e.private_info
-e.user_account
+The read surface is generated from the vendored spec by `tools/generate_resources.py`
+into `resources/_generated.py`: 34 employee reads, 19 company reads, 7 debtor reads.
 
-# --- employee-scoped ---
-e.fixed_hours(year=..., period=...)
-e.variable_hours(year=..., period=...)
-e.fixed_days(year=..., period=...)
-e.variable_days(year=..., period=...)
-e.document_folders
-e.document_types
-e.payslip(year=..., period=...)
-e.annual_statement(year=...)
-
-# --- housekeeping ---
-e.company                 # -> Company (triggers resolution if unknown)
-e.refresh()               # drop this object's cache
-e.loaded                  # {"personal_info", "contracts"} — what's actually been fetched
-e.to_dict()               # dump only what's loaded; does not trigger requests
-```
-
-Parameterised fields (`year`, `period`, …) are **methods**, not properties.
-Unparameterised fields are properties. This keeps `e.contracts` clean while making
-it obvious that `e.leave_requests(year=2025)` varies by argument. Each distinct
-argument set gets its own cache entry.
+Endpoint paths, filter names and the per-endpoint payload key come from the spec. Method
+*names* come from curated maps in the generator, because the spec's own segments are
+inconsistent and mechanical snake_casing produces a surface nobody would design on
+purpose. Those maps are asserted exhaustive against the spec, so an endpoint that appears
+or disappears upstream fails generation rather than silently vanishing from the SDK. CI
+runs `--check`.
 
 ---
 
-## 4. Company resolution (the `api.employee(id)` path)
+## 4. Why `api.employee()` takes both ids
 
-`Nmbrs` holds an **in-memory** index — it lives and dies with the client instance,
-nothing is written to disk:
+Nmbrs exposes no employee-to-company lookup. `GET /api/employees/{employeeId}` returns
+the employee's own record but not its `companyId`, and every other employee read lives
+under `/api/companies/{companyId}/employees/...`.
 
-```python
-self._employee_company: dict[EmployeeId, CompanyId] = {}
-self._companies: list[Company] | None = None
-```
+An earlier draft resolved the company by scanning every visible company until the
+employee turned up, caching the mapping in memory. That was dropped. It made a single
+innocuous-looking call cost up to one request per company, with a cost that depended on
+consent breadth and on which company happened to be listed first — unpredictable in
+exactly the way an SDK should not be.
 
-**Population — free path.** Every time the SDK sees an employee inside a company
-context, it records the mapping. So `api.company(cid).employees()` indexes the whole
-company for free, and `api.company(cid).employee(eid)` never needs resolution.
-
-**Population — resolution path.** When a company-scoped field is accessed on an
-employee whose company is unknown:
-
-1. `GET /api/companies` (paginated, cached on the client) — all companies the token can see.
-2. For each company: `GET /api/companies/{cid}/employees?employeeId={eid}&pageSize=1`
-3. First non-empty `data` wins → cached in `_employee_company`.
-4. Nothing found → `EmployeeNotFoundError`.
-
-Worst case is `1 + N` requests for `N` visible companies, paid **once per client
-instance**. `e.personal_info` and the other employee-scoped fields never trigger it.
-
-Escape hatches, no resolution performed:
+So both ids are required:
 
 ```python
-api.employee(eid, company_id=cid)
-api.company(cid).employee(eid)
-api.prime(company_id)      # index one company's employees up front
+employee = api.employee(company_id, employee_id)
 ```
 
----
+This costs exactly one request. The listing endpoint accepts `?employeeId=`, so it does
+not page through the company. An id that belongs elsewhere raises `ResourceNotFoundError`
+naming both ids, which is also how you discover an employee moved.
 
+Most flows have the company id already, because they arrived through
+`api.companies()` or `api.employees(company_id)`.
 ## 5. Internals
 
 ```
 src/nmbrs_rest/
-  __init__.py            Nmbrs, exceptions, Token
-  client.py              Nmbrs facade + in-memory company index
-  auth.py                OAuth (authorize / PAR / exchange / refresh), Token, auto-refresh
-  transport.py           httpx wrapper: headers, retry/backoff, error mapping
-  pagination.py          Page — lazy auto-paginating iterator
-  errors.py              RFC 7807 -> exception hierarchy
-  lazy.py                lazy_field / lazy_method descriptors + per-object cache
+  __init__.py            Nmbrs, resources, exceptions, Token
+  client.py              Nmbrs facade: credentials, consent, tokens, entry points
+  auth.py                OAuth (authorize / PAR / PKCE / exchange / refresh / revoke)
+  tokens.py              Token + TokenStore: memory, file, keyring, callback
+  transport.py           httpx wrapper: headers, refresh-on-401, retry/backoff
+  pagination.py          Page — lazy auto-paginating iterator, unwrap_one
+  errors.py              RFC 7807 -> exception hierarchy, scope-aware 403
+  _scopes.py             generated: 123 operations -> required scopes
   resources/
-    base.py              Resource: identity, cache, refresh(), loaded, to_dict()
+    base.py              Resource: path building, paging, per-argument cache
+    _generated.py        generated: 60 typed read methods + the payload-key table
     debtor.py
     company.py
     employee.py
-    payroll_run.py
-    static.py
-  models/
-    __init__.py          curated re-exports with stable names
-    _generated.py        pydantic v2, generated — do not edit
   _spec/
     nmbrs-openapi.yaml   vendored spec, provenance recorded
 tools/
   fetch_spec.py          pull the spec from Stoplight
-  generate_models.py     spec -> models/_generated.py
+  generate_scopes.py     spec -> _scopes.py            (--check in CI)
+  generate_resources.py  spec -> resources/_generated.py  (--check in CI)
+scripts/
+  login.py               run the authorization flow, save tokens
+  try_testpypi.py        install the staged package and verify it
+  verify_install.py      checks that run against an installed artifact
 tests/
 ```
+
+`PayrollRun` and the static reads (`countries`, `user_info`, `subscription`,
+`document`, `salary_table`, `end_contract_reasons`) are not implemented yet; the 7 run
+endpoints and 5 standalone ones are excluded from generation for now.
 
 ### 5.1 Transport
 
@@ -373,15 +331,22 @@ Because the envelope always wraps a list, single-item reads such as
 
 ### 5.3 Models
 
-Generated with `datamodel-code-generator` from the vendored spec into
-`models/_generated.py`; `models/__init__.py` re-exports a curated set under stable
-names so a spec rename doesn't break user imports.
+**Not implemented yet.** Reads currently return `dict[str, Any]` exactly as the API
+sent them, minus the envelope and the per-employee wrapper. `Token` is the only
+pydantic model in the package today.
 
+The intended shape, once built:
+
+- Generated from the vendored spec into `models/_generated.py`, with
+  `models/__init__.py` re-exporting a curated set under stable names so a spec rename
+  does not break user imports.
 - pydantic v2, `model_config = ConfigDict(extra="allow")` — the API is additive-only
   and unversioned, so unknown fields must survive rather than blow up.
 - Field aliases map the API's `camelCase` to Python `snake_case`.
 - `format: uuid` → `UUID`, `format: date-time` → `datetime`, `format: date` → `date`.
-- `tools/generate_models.py` is checked in; regenerating is a reviewable diff.
+
+`tools/generate_resources.py` already derives the payload key and JSON type per
+endpoint, so the wiring point for models is known.
 
 ### 5.4 Errors
 
@@ -461,17 +426,33 @@ Version is derived from git tags; `pyproject.toml` carries no version field. Sta
 publishes to TestPyPI on demand, live publishes to PyPI on a `v*` tag behind a manual
 approval gate. See [docs/releasing.md](docs/releasing.md).
 
-## 9. Open points for review
+## 9. Decisions taken, and what is still open
 
-1. **Resolution cost.** For a token that can see many companies, a cold
-   `api.employee(id).contracts` costs `1 + N` requests. Acceptable, or should
-   `api.employee()` warn/require opt-in above some company count?
-2. **`e.address` vs `e.addresses`.** `GET /api/employees/{id}` returns one address,
-   but `/companies/{cid}/employees/addresses` returns a list per employee.
-   Proposal: `e.address` = the default from the cheap call, `e.addresses` = the full list.
-3. **`year`/`period` defaults.** Several endpoints return the current period when
-   `year`/`period` are omitted. Proposal: pass through unset rather than defaulting
-   to `company.period`, so behaviour matches the API exactly.
-4. **Country variants.** The spec is titled `version: Global`. If NL/SE-specific
-   fields exist behind the same paths, `extra="allow"` covers reading them, but
-   typed access would need per-country model overlays. Deferred until we see one.
+Resolved since the first review:
+
+| Question | Decision |
+|---|---|
+| Reads as attributes or methods? | **Methods.** 33 of 38 employee endpoints take a filter; an attribute cannot express `year`/`period`/`created_from`. |
+| Collections eager or lazy? | **Eager lists.** `Page` stays available for streaming. |
+| `api.employee(id)` without a company? | **Dropped.** Both ids required — see §4. |
+| Where does auth live? | **On `Nmbrs`.** `login()` / `authenticate()` / live token properties. |
+
+Still open:
+
+1. **Typed models.** Reads currently return `dict[str, Any]`. Generating pydantic models
+   from the spec's response schemas is the next step; the generator already extracts the
+   payload key and type per endpoint, so the shape information is in hand.
+2. **Bulk prefetch.** Omitting `employeeId` returns every employee's rows in one
+   paginated pass, turning N requests into one. A supported `Company.prefetch(...)` that
+   populates each employee's cache is worth having — see `docs/errors.md`, *Reducing
+   request volume*, for the manual version.
+3. **`address` vs `addresses`.** `GET /api/employees/{id}` returns one address inside
+   `details()`, while `/companies/{cid}/employees/addresses` returns a list per employee
+   via `employee.addresses()`. Both are reachable; whether they should be reconciled is
+   open.
+4. **Writes.** 39 POST/PUT/DELETE operations are unimplemented. They need a different
+   safety story than reads: no automatic retry on timeout, and idempotency is not offered
+   by the API.
+5. **Country variants.** The spec is titled `version: Global`. If NL/SE-specific fields
+   exist behind the same paths, dict returns already carry them; typed access would need
+   per-country overlays. Deferred until one is seen.
