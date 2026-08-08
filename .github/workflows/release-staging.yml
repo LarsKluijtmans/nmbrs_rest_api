@@ -1,0 +1,134 @@
+# Release: staging
+#
+#   Actions -> Release: staging -> Run workflow -> type the version
+#
+#   validate -> build -> TestPyPI -> install from TestPyPI and verify
+#
+# No approval, nothing permanent. TestPyPI is disposable; publish here as often as
+# you like. Promote to PyPI with the separate "Release: production" workflow, which
+# checks that what it is about to publish is byte-identical to what was staged here.
+
+name: "Release: staging"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stage, e.g. 0.0.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-staging
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: python -m pip install --upgrade pip packaging
+
+      - name: Version is releasable
+        # A missing CHANGELOG section is a warning here, not a failure - the summary
+        # falls back to the commits since the last tag.
+        run: python tools/release_check.py preflight --version "${{ inputs.version }}"
+
+  publish:
+    name: Build and publish to TestPyPI
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/nmbrs-rest-api/
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: python -m pip install --upgrade pip build twine packaging
+
+      - name: Build sdist and wheel
+        # No tag exists yet; the requested version is pinned instead of derived.
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.version }}
+        run: python -m build
+
+      - name: twine check
+        run: twine check --strict dist/*
+
+      - name: Artifact really carries the requested version
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          from packaging.utils import parse_wheel_filename
+
+          wanted = os.environ["WANTED"]
+          wheel = next(Path("dist").glob("*.whl"))
+          _, built, _, _ = parse_wheel_filename(wheel.name)
+          if str(built) != wanted:
+              sys.exit(f"FAIL: asked for {wanted} but built {built}")
+          print(f"OK: built {built}")
+          PY
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+          # TestPyPI refuses duplicate filenames. Re-staging the same version is a
+          # no-op rather than a failure - and production re-checks the hash, so a
+          # stale artifact cannot be promoted silently.
+          skip-existing: true
+          attestations: false
+          print-hash: true
+
+  verify:
+    name: Install from TestPyPI and verify
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install into a clean venv and run the checks
+        run: python scripts/try_testpypi.py --version "${{ inputs.version }}" --wait 180
+
+      - name: Summary
+        run: |
+          {
+            echo "# Staged ${{ inputs.version }}"
+            echo
+            echo "Installed from TestPyPI into a clean virtualenv and verified."
+            echo
+            echo '```bash'
+            echo "pip install --index-url https://test.pypi.org/simple/ \\"
+            echo "  --extra-index-url https://pypi.org/simple/ \\"
+            echo "  'nmbrs-rest-api==${{ inputs.version }}'"
+            echo '```'
+            echo
+            echo "Happy with it? Run **Release: production** with the same version."
+          } >> "$GITHUB_STEP_SUMMARY"

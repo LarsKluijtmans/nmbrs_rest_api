@@ -244,7 +244,13 @@ def staging_matches(version: str, wheel: Path) -> int:
         and f"-{version}-" in str(f.get("filename", ""))
     ]
     if not remote:
-        print(f"no wheel for {version} on TestPyPI yet; nothing to compare")
+        note = (
+            f"{version} was never staged to TestPyPI, so nothing has installed or "
+            "exercised this artifact. Run the staging release first unless you mean "
+            "to skip it."
+        )
+        write_summary(f"> **Not staged.** {note}\n")
+        print(f"::warning::{note}")
         return 0
 
     hashes = remote[0].get("hashes", {})

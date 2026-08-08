@@ -1,0 +1,171 @@
+# Release: production
+#
+#   Actions -> Release: production -> Run workflow -> type the version -> approve
+#
+#   validate -> build -> matches what was staged? -> [ approval ] -> PyPI -> tag
+#
+# Publishing here is permanent: PyPI never allows a version number to be reused, even
+# after deleting a release. The `pypi` environment's required reviewers are the gate,
+# and everything before it is reversible.
+#
+# The build is repeated rather than carried over from the staging run, because
+# artifacts do not cross workflow runs. Identity is proven instead: the freshly built
+# wheel's sha256 is compared against the one already on TestPyPI, so what ships is
+# byte-identical to what was verified there. A version that was never staged is
+# allowed but called out loudly in the summary.
+
+name: "Release: production"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.0.2 (stage it first)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    name: Validate and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: python -m pip install --upgrade pip build twine packaging
+
+      - name: Tag must not already exist
+        run: |
+          tag="v${{ inputs.version }}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists. Releasing it again would move a tag people may already have."
+            exit 1
+          fi
+          echo "OK: $tag is free"
+
+      - name: Version is releasable
+        # Refuses a version PyPI would reject, one already published, or one that is
+        # not newer than the latest. Writes the reviewer's summary.
+        run: python tools/release_check.py preflight --version "${{ inputs.version }}"
+
+      - name: Build sdist and wheel
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.version }}
+        run: python -m build
+
+      - name: twine check
+        run: twine check --strict dist/*
+
+      - name: Artifact really carries the requested version
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          from packaging.utils import parse_wheel_filename
+
+          wanted = os.environ["WANTED"]
+          wheel = next(Path("dist").glob("*.whl"))
+          _, built, _, _ = parse_wheel_filename(wheel.name)
+          if str(built) != wanted:
+              sys.exit(f"FAIL: asked for {wanted} but built {built}")
+          print(f"OK: built {built}")
+          PY
+
+      - name: This is what was staged and verified
+        # Hard fail on a mismatch: TestPyPI kept an older artifact under this version,
+        # so whatever was verified there is not what would ship.
+        run: |
+          python tools/release_check.py staging-matches \
+            --version "${{ inputs.version }}" \
+            --wheel "$(ls dist/*.whl)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/nmbrs-rest-api/
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # No skip-existing: a duplicate on PyPI means something is wrong and should
+          # stop the run loudly.
+          attestations: false
+          print-hash: true
+
+  tag:
+    name: Tag and publish the GitHub Release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the tag
+        # After the upload on purpose: PyPI is the point of no return, so a tag only
+        # ever records something that actually shipped.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ inputs.version }}" -m "Release ${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
+
+      - name: Summary
+        run: |
+          {
+            echo "# Released ${{ inputs.version }}"
+            echo
+            echo "- PyPI: https://pypi.org/project/nmbrs-rest-api/${{ inputs.version }}/"
+            echo "- Tag: \`v${{ inputs.version }}\`"
+            echo
+            echo '```bash'
+            echo "pip install nmbrs-rest-api==${{ inputs.version }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -7,27 +7,41 @@ See [../DESIGN.md](../DESIGN.md) for the SDK architecture.
 
 ## How to release
 
-1. Edit `CHANGELOG.md`: move `Unreleased` into a `## [X.Y.Z] - YYYY-MM-DD` section and
-   commit it (the GitHub web editor is fine).
-2. **Actions → Release → Run workflow**, type the version, run it.
-3. Watch it validate, build, publish to TestPyPI and verify the staged artifact.
-4. Read the run summary — it shows the version, the previous release and the changelog.
-5. Approve the **pypi** environment.
+Two buttons, both under **Actions**. Neither needs a local command.
+
+### 1. Stage it
+
+**Actions → Release: staging → Run workflow → type the version.**
+
+Builds, publishes to TestPyPI, then installs from TestPyPI into a clean virtualenv and
+runs the verification checks. No approval, nothing permanent — TestPyPI is disposable,
+so stage as often as you like.
+
+### 2. Ship it
+
+**Actions → Release: production → Run workflow → same version → approve.**
+
+Validates, rebuilds, proves the build is byte-identical to what was staged, then waits
+on the `pypi` environment's required reviewers. On approval it publishes to PyPI,
+creates the tag and cuts the GitHub Release.
 
 ```
-validate ──▶ build ──▶ TestPyPI ──▶ verify staged artifact
-                                          │
-                                 [ you approve here ]
-                                          │
-                                       PyPI ──▶ tag + GitHub Release
+Release: staging      validate → build → TestPyPI → install & verify
+Release: production   validate → build → matches staging? → [approve] → PyPI → tag
 ```
 
 Everything before the approval is reversible. Everything after it is not.
 
-### What gets checked before you are asked
+### Why the production job rebuilds
 
-The `validate` job refuses anything that cannot succeed, or that would succeed in a way
-you cannot undo:
+Artifacts do not cross workflow runs, so production cannot reuse the staging build.
+Identity is proven instead: the freshly built wheel's sha256 is compared against the one
+already on TestPyPI. A mismatch fails hard, because it means TestPyPI is holding an older
+artifact under that version and what was verified is not what would ship.
+
+Releasing a version that was never staged is allowed, but the summary says so loudly.
+
+### What gets checked before you are asked
 
 | Check | Why |
 | --- | --- |
@@ -36,21 +50,18 @@ you cannot undo:
 | Not already on PyPI | version numbers are permanent, even after deleting a release |
 | Newer than PyPI's latest | pip resolves by version, not upload time, so an older number never installs |
 | Tag `vX.Y.Z` does not exist | re-releasing would move a tag people may already have |
-| `CHANGELOG.md` has that section | it is what you approve against |
+| Build carries the requested version | catches a version pin that did not take |
+| Matches what was staged | TestPyPI skips duplicate filenames rather than replacing them |
 
-Then `verify` installs the package from TestPyPI into a clean virtualenv and runs
-`scripts/verify_install.py` against it, so the approval decision is made about an
-artifact that has been installed and exercised, not just built.
-
-It also compares the staged wheel's hash against the one just built. TestPyPI *skips*
-duplicate filenames rather than replacing them, so without that check a re-run after a
-code change would verify the old artifact and then promote the new one unverified.
+A missing `CHANGELOG.md` section is **not** a blocker. If there is no `## [X.Y.Z]`
+section the summary falls back to the commits since the last tag, so there is still
+something to approve against.
 
 ### Where the version comes from
 
 From the workflow input, not from a tag. `hatch-vcs` normally derives it from git
-history; the build job sets `SETUPTOOLS_SCM_PRETEND_VERSION` instead, and the build then
-asserts the wheel really carries the requested version.
+history; the build sets `SETUPTOOLS_SCM_PRETEND_VERSION` instead, then asserts the wheel
+really carries the requested version.
 
 The tag is created **after** PyPI accepts the upload, so a run that fails or is rejected
 leaves nothing behind to clean up, and every tag records something that actually shipped.
